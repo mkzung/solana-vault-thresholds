@@ -1,0 +1,16 @@
+cff-version: 1.2.0
+message: "If you reference this work, please cite it as below."
+title: "solana-vault-thresholds: on-chain parametric risk-threshold storage with permissioned oracle updates (Anchor 0.30.1)"
+authors:
+  - family-names: Gorbuk
+    given-names: Max
+    email: gorbuk.maxim@gmail.com
+date-released: "2026-05-21"
+license: MIT
+repository-code: "https://github.com/mkzung/solana-vault-thresholds"
+keywords:
+  - solana
+  - anchor
+  - defi
+  - risk-monitoring
+  - rust
