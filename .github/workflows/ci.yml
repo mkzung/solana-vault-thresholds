@@ -54,6 +54,15 @@ jobs:
         run: |
           mkdir -p $HOME/.config/solana
           solana-keygen new --no-bip39-passphrase -o $HOME/.config/solana/id.json --silent
+      - name: Drop stale Cargo.lock (v4 incompatibility)
+        # Swatinem/rust-cache@v2 runs `cargo metadata` with the modern
+        # `dtolnay/rust-toolchain@stable` toolchain, which writes Cargo.lock
+        # at lockfile-version 4. Anchor 0.30.1's bundled `cargo-build-sbf`
+        # uses Solana 1.18.20's older cargo, which only understands v3 and
+        # errors out with `lock file version 4 requires -Znext-lockfile-bump`.
+        # Removing the lockfile here lets Anchor's cargo regenerate it
+        # in a compatible format on its next invocation.
+        run: rm -f Cargo.lock
       - name: Sync program IDs (replace placeholder declare_id!)
         # The committed declare_id! in lib.rs is a placeholder; `anchor keys
         # sync` derives a real program ID from the keypair generated at
