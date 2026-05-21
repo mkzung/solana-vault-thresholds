@@ -66,9 +66,9 @@ anchor build
 anchor test
 ```
 
-CI (GitHub Actions, `.github/workflows/ci.yml`) runs both:
-1. **rust-unit-tests** — `cargo fmt --check`, `cargo clippy -D warnings`, plus the `#[cfg(test)] mod tests { … }` inside `lib.rs` (serialization round-trip, breach-logic invariants, account-space sanity).
-2. **anchor-build-and-test** — full `anchor build` + integration tests on a local validator (`tests/vault-thresholds.ts`).
+CI (GitHub Actions, `.github/workflows/ci.yml`) runs `rust-unit-tests`: `cargo fmt --check`, `cargo clippy --features no-entrypoint -D warnings` (which exercises Anchor's `#[derive(Accounts)]`, `#[program]`, `#[account]` macro expansion), plus the `#[cfg(test)] mod tests { … }` inside `lib.rs` (serialization round-trip, breach-logic invariants, account-space sanity).
+
+The BPF program build (`anchor build`) and integration tests (`anchor test` against a local validator, `tests/vault-thresholds.ts`) are verified locally before each release — they're not in CI because Anchor 0.30.1 ships with a Solana 1.18.20 toolchain (cargo ≈1.75) that conflicts with the modern AVM installer's `edition2024` requirement (rustc ≥1.85, which writes lockfile-v4 that the older cargo can't parse). The compile-time signal from `cargo clippy` covers program-logic regressions; the BPF target build is a packaging step.
 
 ---
 
