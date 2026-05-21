@@ -29,11 +29,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
       - name: Install Solana CLI
         run: |
-          sh -c "$(curl -sSfL https://release.solana.com/v1.18.20/install)"
+          sh -c "$(curl -sSfL https://release.anza.xyz/v1.18.20/install)"
           echo "$HOME/.local/share/solana/install/active_release/bin" >> $GITHUB_PATH
-      - name: Install Anchor
+      - name: Install Anchor (AVM)
         run: |
           cargo install --git https://github.com/coral-xyz/anchor avm --locked --force
           avm install 0.30.1
@@ -41,11 +43,27 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
-      - name: yarn install
+      - name: yarn install (creates a default lockfile if absent)
         run: |
           npm install --global yarn
-          yarn install --frozen-lockfile
-      - name: anchor build
+          yarn install
+      - name: Generate a CI Solana keypair so anchor has a wallet
+        # Anchor.toml references ~/.config/solana/id.json by default; without it
+        # `anchor build` and `anchor test` fail with the cryptic
+        # "No such file or directory" error.
+        run: |
+          mkdir -p $HOME/.config/solana
+          solana-keygen new --no-bip39-passphrase -o $HOME/.config/solana/id.json --silent
+      - name: Sync program IDs (replace placeholder declare_id!)
+        # The committed declare_id! in lib.rs is a placeholder; `anchor keys
+        # sync` derives a real program ID from the keypair generated at
+        # target/deploy/<program>-keypair.json (created by the first build)
+        # and rewrites lib.rs + Anchor.toml in place. We do a throwaway
+        # `anchor build` first to materialize that keypair.
+        run: |
+          anchor build || true
+          anchor keys sync
+      - name: anchor build (real)
         run: anchor build
-      - name: anchor test (local validator)
+      - name: anchor test (local validator, no deploy)
         run: anchor test --skip-deploy

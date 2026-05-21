@@ -123,11 +123,7 @@ pub mod vault_thresholds {
     /// Push a new metric value for a named threshold. Permissioned to the
     /// configured `oracle_signer`. On a NEW breach (previously-clean threshold
     /// crosses), emits `BreachEvent`.
-    pub fn update_metric(
-        ctx: Context<UpdateMetric>,
-        name: [u8; 32],
-        new_value: i64,
-    ) -> Result<()> {
+    pub fn update_metric(ctx: Context<UpdateMetric>, name: [u8; 32], new_value: i64) -> Result<()> {
         let clock = Clock::get()?;
         let monitor = &mut ctx.accounts.monitor;
         require!(
@@ -185,10 +181,7 @@ pub mod vault_thresholds {
     }
 
     /// Rotate the oracle signer. Authority only.
-    pub fn set_oracle_signer(
-        ctx: Context<AuthorityAction>,
-        new_signer: Pubkey,
-    ) -> Result<()> {
+    pub fn set_oracle_signer(ctx: Context<AuthorityAction>, new_signer: Pubkey) -> Result<()> {
         let monitor = &mut ctx.accounts.monitor;
         monitor.oracle_signer = new_signer;
         emit!(OracleSignerRotated {
@@ -431,7 +424,8 @@ mod tests {
         assert!(!new_breach);
         // Above threshold → breach
         t.current_value = 150;
-        let now_breached = matches!(t.comparison, Comparison::Above) && t.current_value > t.threshold_value;
+        let now_breached =
+            matches!(t.comparison, Comparison::Above) && t.current_value > t.threshold_value;
         assert!(now_breached);
         // Sticky: re-fall below should NOT clear flag without reset
         let still_breached_if_set = t.breached || now_breached;
@@ -448,7 +442,8 @@ mod tests {
             breached: false,
             last_update_slot: 0,
         };
-        let now_breached = matches!(t.comparison, Comparison::Below) && t.current_value < t.threshold_value;
+        let now_breached =
+            matches!(t.comparison, Comparison::Below) && t.current_value < t.threshold_value;
         assert!(now_breached);
     }
 }
