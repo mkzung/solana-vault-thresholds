@@ -29,7 +29,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      # IMPORTANT: pin to a Rust version that defaults to lockfile-version 3.
+      # Anchor 0.30.1's bundled cargo-build-sbf uses Solana 1.18.20's older
+      # cargo (≈1.75), which can only parse v3 lockfiles. Modern cargo
+      # (≥1.84) writes v4 by default and the build then fails with
+      # "lock file version 4 requires -Znext-lockfile-bump".
+      # Anchor's host-cargo IDL build step uses this system toolchain, so
+      # we must keep it on v3 too. 1.79.0 is the highest version that
+      # still emits v3 lockfiles by default.
+      - uses: dtolnay/rust-toolchain@1.79.0
       - uses: Swatinem/rust-cache@v2
       - name: Install Solana CLI
         run: |
