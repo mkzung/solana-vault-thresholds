@@ -131,6 +131,14 @@ pub mod vault_thresholds {
             VaultThresholdsError::UnauthorizedOracle
         );
 
+        // Capture immutable identity fields BEFORE taking the mutable
+        // threshold borrow. Without this, `emit!` would try to read
+        // `monitor.authority`/`vault_label` while `t` still holds a
+        // mutable sub-borrow of `monitor.thresholds`, which the borrow
+        // checker rejects (E0502).
+        let authority = monitor.authority;
+        let vault_label = monitor.vault_label;
+
         let t = monitor
             .thresholds
             .iter_mut()
@@ -151,8 +159,8 @@ pub mod vault_thresholds {
         if cross_event {
             t.breached = true;
             emit!(BreachEvent {
-                authority: monitor.authority,
-                vault_label: monitor.vault_label,
+                authority,
+                vault_label,
                 metric_name: name,
                 value: new_value,
                 threshold: t.threshold_value,
@@ -167,6 +175,9 @@ pub mod vault_thresholds {
     /// Clear a sticky breach flag. Authority only.
     pub fn reset_breach(ctx: Context<AuthorityAction>, name: [u8; 32]) -> Result<()> {
         let monitor = &mut ctx.accounts.monitor;
+        // Same borrow-pattern as `update_metric` — capture identity before
+        // iter_mut() to avoid E0502.
+        let authority = monitor.authority;
         let t = monitor
             .thresholds
             .iter_mut()
@@ -174,7 +185,7 @@ pub mod vault_thresholds {
             .ok_or(VaultThresholdsError::ThresholdNotFound)?;
         t.breached = false;
         emit!(BreachReset {
-            authority: monitor.authority,
+            authority,
             metric_name: name,
         });
         Ok(())
