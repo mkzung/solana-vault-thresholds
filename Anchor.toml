@@ -6,10 +6,10 @@ solana_version = "1.18.20"
 resolution = true
 skip-lint = false
 
+# PLACEHOLDER program ID — run `anchor keys sync` after first build to
+# replace with a key whose private half lives in
+# target/deploy/vault_thresholds-keypair.json. Do NOT deploy with this.
 [programs.localnet]
-vault_thresholds = "VtThr11111111111111111111111111111111111111"
-
-[programs.devnet]
 vault_thresholds = "VtThr11111111111111111111111111111111111111"
 
 [registry]

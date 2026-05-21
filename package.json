@@ -2,6 +2,11 @@
   "name": "solana-vault-thresholds",
   "version": "0.1.0",
   "license": "MIT",
+  "author": "Max Gorbuk",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mkzung/solana-vault-thresholds"
+  },
   "scripts": {
     "lint:fix": "prettier */*.js \"*/**/*{.js,.ts}\" -w",
     "lint": "prettier */*.js \"*/**/*{.js,.ts}\" --check"

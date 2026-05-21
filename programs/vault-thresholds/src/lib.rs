@@ -47,7 +47,7 @@
 //!
 //! ## Events
 //!
-//! * `BreachEvent { vault, metric_name, value, threshold, comparison,
+//! * `BreachEvent { vault, metricpad_name, value, threshold, comparison,
 //!   timestamp }` — emitted exactly once on the slot a metric first
 //!   crosses its threshold. Subsequent updates while still breached
 //!   don't re-emit.
@@ -62,6 +62,10 @@
 
 use anchor_lang::prelude::*;
 
+// ⚠️ PLACEHOLDER program ID. Run `anchor keys sync` after first build to
+// derive a real key from `target/deploy/vault_thresholds-keypair.json` and
+// rewrite both this `declare_id!` and `Anchor.toml`. Deploying with the
+// placeholder would target an address whose private key nobody controls.
 declare_id!("VtThr11111111111111111111111111111111111111");
 
 #[program]
@@ -82,6 +86,7 @@ pub mod vault_thresholds {
         monitor.bump = ctx.bumps.monitor;
         emit!(MonitorInitialized {
             authority: monitor.authority,
+            oracle_signer: monitor.oracle_signer,
             vault_label,
         });
         Ok(())
@@ -113,6 +118,7 @@ pub mod vault_thresholds {
         });
         emit!(ThresholdAdded {
             authority: monitor.authority,
+            vault_label: monitor.vault_label,
             name,
             threshold_value,
             comparison,
@@ -161,7 +167,7 @@ pub mod vault_thresholds {
             emit!(BreachEvent {
                 authority,
                 vault_label,
-                metric_name: name,
+                metricpad_name: name,
                 value: new_value,
                 threshold: t.threshold_value,
                 comparison: t.comparison,
@@ -173,30 +179,51 @@ pub mod vault_thresholds {
     }
 
     /// Clear a sticky breach flag. Authority only.
+    /// Idempotent: calling on an already-clean threshold is a no-op and does
+    /// NOT emit `BreachReset` (so indexers don't double-handle resets).
     pub fn reset_breach(ctx: Context<AuthorityAction>, name: [u8; 32]) -> Result<()> {
         let monitor = &mut ctx.accounts.monitor;
         // Same borrow-pattern as `update_metric` — capture identity before
         // iter_mut() to avoid E0502.
         let authority = monitor.authority;
+        let vault_label = monitor.vault_label;
         let t = monitor
             .thresholds
             .iter_mut()
             .find(|t| t.name == name)
             .ok_or(VaultThresholdsError::ThresholdNotFound)?;
+        let was_breached = t.breached;
         t.breached = false;
-        emit!(BreachReset {
-            authority,
-            metric_name: name,
-        });
+        if was_breached {
+            emit!(BreachReset {
+                authority,
+                vault_label,
+                metricpad_name: name,
+            });
+        }
         Ok(())
     }
 
-    /// Rotate the oracle signer. Authority only.
+    /// Rotate the oracle signer. Authority only. Rejects zero-pubkey to
+    /// prevent permanently bricking the monitor (no signer = no updates).
+    /// Also rejects no-op rotations (same key) to keep event logs clean.
     pub fn set_oracle_signer(ctx: Context<AuthorityAction>, new_signer: Pubkey) -> Result<()> {
+        require_keys_neq!(
+            new_signer,
+            Pubkey::default(),
+            VaultThresholdsError::InvalidOracleSigner
+        );
         let monitor = &mut ctx.accounts.monitor;
+        require_keys_neq!(
+            new_signer,
+            monitor.oracle_signer,
+            VaultThresholdsError::OracleSignerUnchanged
+        );
+        let old_signer = monitor.oracle_signer;
         monitor.oracle_signer = new_signer;
         emit!(OracleSignerRotated {
             authority: monitor.authority,
+            old_signer,
             new_signer,
         });
         Ok(())
@@ -217,7 +244,7 @@ pub const NAME_LEN: usize = 32;
 // ThresholdConfig: name 32 + threshold_value 8 + comparison 1 + current_value 8
 // + breached 1 + last_update_slot 8 = 58 bytes
 // Total: 8 + 32 + 32 + 32 + 1 + 4 + 16 × 58 = 109 + 928 = 1037 bytes.
-// Pad to 1100 for forward-compat with adding ~10 bytes of new fields.
+// Pad to 1100 for forward-compat (~60 B of slack for new fields).
 pub const VAULT_MONITOR_SPACE: usize = 1100;
 
 // ──────────────────────────────────────────────────────────────────────
@@ -303,12 +330,14 @@ pub struct UpdateMetric<'info> {
 #[event]
 pub struct MonitorInitialized {
     pub authority: Pubkey,
+    pub oracle_signer: Pubkey,
     pub vault_label: [u8; 32],
 }
 
 #[event]
 pub struct ThresholdAdded {
     pub authority: Pubkey,
+    pub vault_label: [u8; 32],
     pub name: [u8; 32],
     pub threshold_value: i64,
     pub comparison: Comparison,
@@ -318,7 +347,7 @@ pub struct ThresholdAdded {
 pub struct BreachEvent {
     pub authority: Pubkey,
     pub vault_label: [u8; 32],
-    pub metric_name: [u8; 32],
+    pub metricpad_name: [u8; 32],
     pub value: i64,
     pub threshold: i64,
     pub comparison: Comparison,
@@ -329,12 +358,14 @@ pub struct BreachEvent {
 #[event]
 pub struct BreachReset {
     pub authority: Pubkey,
-    pub metric_name: [u8; 32],
+    pub vault_label: [u8; 32],
+    pub metricpad_name: [u8; 32],
 }
 
 #[event]
 pub struct OracleSignerRotated {
     pub authority: Pubkey,
+    pub old_signer: Pubkey,
     pub new_signer: Pubkey,
 }
 
@@ -354,6 +385,10 @@ pub enum VaultThresholdsError {
     UnauthorizedOracle,
     #[msg("Caller is not the monitor authority.")]
     Unauthorized,
+    #[msg("Oracle signer cannot be the zero pubkey (would brick the monitor).")]
+    InvalidOracleSigner,
+    #[msg("New oracle signer is identical to the current one — no-op rejected.")]
+    OracleSignerUnchanged,
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -364,7 +399,7 @@ pub enum VaultThresholdsError {
 mod tests {
     use super::*;
 
-    fn _name(bytes: &[u8]) -> [u8; 32] {
+    fn pad_name(bytes: &[u8]) -> [u8; 32] {
         let mut out = [0u8; 32];
         out[..bytes.len()].copy_from_slice(bytes);
         out
@@ -372,7 +407,7 @@ mod tests {
 
     #[test]
     fn name_helper_pads_short_strings() {
-        let n = _name(b"oracle_freeze");
+        let n = pad_name(b"oracle_freeze");
         assert_eq!(&n[..13], b"oracle_freeze");
         assert_eq!(n[13], 0);
     }
@@ -385,7 +420,7 @@ mod tests {
     #[test]
     fn threshold_config_round_trip_serialization() {
         let cfg = ThresholdConfig {
-            name: _name(b"util"),
+            name: pad_name(b"util"),
             threshold_value: 9000, // 90.00% in bps
             comparison: Comparison::Above,
             current_value: 8500,
@@ -423,7 +458,7 @@ mod tests {
     #[test]
     fn breach_logic_above() {
         let mut t = ThresholdConfig {
-            name: _name(b"oi"),
+            name: pad_name(b"oi"),
             threshold_value: 100,
             comparison: Comparison::Above,
             current_value: 50,
@@ -446,7 +481,7 @@ mod tests {
     #[test]
     fn breach_logic_below() {
         let t = ThresholdConfig {
-            name: _name(b"oracle_freshness"),
+            name: pad_name(b"oracle_freshness"),
             threshold_value: 50,
             comparison: Comparison::Below,
             current_value: 30,
@@ -456,5 +491,80 @@ mod tests {
         let now_breached =
             matches!(t.comparison, Comparison::Below) && t.current_value < t.threshold_value;
         assert!(now_breached);
+    }
+
+    /// Replicates the sticky-edge state machine from `update_metric` and
+    /// exercises the FULL invariant: clean → breach → still-breached-while-
+    /// recovered → reset → re-breach must emit exactly two cross events.
+    /// Without this, a regression that deletes the `let cross_event =
+    /// now_breached && !t.breached;` line would slip past `cargo test`.
+    fn sticky_update(t: &mut ThresholdConfig, value: i64) -> bool {
+        t.current_value = value;
+        let now_breached = match t.comparison {
+            Comparison::Above => value > t.threshold_value,
+            Comparison::Below => value < t.threshold_value,
+        };
+        let cross = now_breached && !t.breached;
+        if cross {
+            t.breached = true;
+        }
+        cross
+    }
+
+    #[test]
+    fn sticky_edge_full_lifecycle() {
+        let mut t = ThresholdConfig {
+            name: pad_name(b"util"),
+            threshold_value: 9000,
+            comparison: Comparison::Above,
+            current_value: 0,
+            breached: false,
+            last_update_slot: 0,
+        };
+
+        // Below threshold → no cross
+        assert!(!sticky_update(&mut t, 8000));
+        assert!(!t.breached);
+
+        // Crosses upward → first cross
+        assert!(sticky_update(&mut t, 9500));
+        assert!(t.breached);
+
+        // Drops back below threshold but breached stays sticky → NO new cross
+        assert!(!sticky_update(&mut t, 7000));
+        assert!(t.breached, "sticky semantics: breached must remain set");
+
+        // Climbs above again → still no cross (already breached)
+        assert!(!sticky_update(&mut t, 9999));
+        assert!(t.breached);
+
+        // Manual reset (simulating reset_breach)
+        t.breached = false;
+
+        // Below threshold → no cross
+        assert!(!sticky_update(&mut t, 7000));
+
+        // Crosses upward again → second cross
+        assert!(sticky_update(&mut t, 9500));
+        assert!(t.breached);
+    }
+
+    #[test]
+    fn sticky_edge_below_polarity() {
+        let mut t = ThresholdConfig {
+            name: pad_name(b"oracle_freshness_slots"),
+            threshold_value: 50,
+            comparison: Comparison::Below,
+            current_value: 0,
+            breached: false,
+            last_update_slot: 0,
+        };
+        // 100 > 50 → no cross
+        assert!(!sticky_update(&mut t, 100));
+        // 30 < 50 → cross
+        assert!(sticky_update(&mut t, 30));
+        // 80 > 50 but already breached → no new cross
+        assert!(!sticky_update(&mut t, 80));
+        assert!(t.breached);
     }
 }

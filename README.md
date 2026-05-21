@@ -1,12 +1,13 @@
 # solana-vault-thresholds
 
+[![CI](https://github.com/mkzung/solana-vault-thresholds/actions/workflows/ci.yml/badge.svg)](https://github.com/mkzung/solana-vault-thresholds/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Anchor](https://img.shields.io/badge/anchor-0.30.1-blue.svg)](https://www.anchor-lang.com/)
 [![Solana](https://img.shields.io/badge/solana-1.18-blue.svg)](https://docs.solana.com/)
 
 **Minimal on-chain primitive for parametric risk-threshold storage with permissioned oracle updates and breach-event emission.**
 
-A small Anchor program (~250 lines) that gives a DeFi risk team (Kamino curator, Drift risk lead, Morpho-style curator on Solana, etc.) an immutable on-chain trail of *what they were watching* and *when each threshold was breached*. Solves the "where did we say the OI cap was last month?" auditability problem that today lives only in private Notion docs.
+A focused Anchor program (~360 LOC + ~210 LOC of in-crate tests) that gives a DeFi risk team (Kamino curator, Drift risk lead, Morpho-style curator on Solana, etc.) an immutable on-chain trail of *what they were watching* and *when each threshold was breached*. Solves the "where did we say the OI cap was last month?" auditability problem that today lives only in private Notion docs.
 
 ---
 
@@ -85,7 +86,7 @@ pub struct VaultMonitor {
 }
 ```
 
-PDA seed: `[b"monitor", authority.key(), vault_label]`. Total account size: 1100 B (room for ~10 B forward-compat additions).
+PDA seed: `[b"monitor", authority.key(), vault_label]`. Total account size: 1100 B allocated for a minimum need of 1037 B (8 disc + 32×3 keys + 1 bump + 4 Vec len + 16 × 58 B `ThresholdConfig`) — leaves ~60 B of slack for forward-compat field additions.
 
 ---
 
