@@ -49,13 +49,19 @@ A small Anchor program (~250 lines) that gives a DeFi risk team (Kamino curator,
 ## Build & test
 
 ```bash
-# Prereqs (install once)
+# 1. One-time toolchain install
 sh -c "$(curl -sSfL https://release.solana.com/v1.18.20/install)"
 cargo install --git https://github.com/coral-xyz/anchor avm --locked
 avm install 0.30.1 && avm use 0.30.1
 yarn install
 
-# Build, deploy to local validator, run integration tests
+# 2. Generate a fresh program keypair on first clone, sync the program ID
+#    everywhere (lib.rs `declare_id!` + Anchor.toml). The repo ships with a
+#    placeholder ID; this command replaces it with one whose private key
+#    you control locally.
+anchor keys sync
+
+# 3. Build + run integration tests on a local validator
 anchor build
 anchor test
 ```

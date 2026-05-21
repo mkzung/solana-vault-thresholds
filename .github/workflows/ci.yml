@@ -17,13 +17,12 @@ jobs:
       - name: cargo fmt --check
         run: cargo fmt --all -- --check
       - name: cargo clippy
-        run: cargo clippy --all-targets -- -D warnings
-      - name: cargo test (unit-only, no on-chain)
-        # Anchor crate references the BPF runtime so we cannot run the program crate's
-        # default test target on a vanilla host. Instead, run --no-run to confirm the
-        # crate at least compiles for the host target, then explicitly --lib + test
-        # the gated [cfg(test)] mod tests which don't need a validator.
-        run: cargo test --lib --features no-entrypoint --no-fail-fast || true
+        # `no-entrypoint` removes the BPF program entrypoint so the crate builds
+        # on a vanilla host target; the in-crate `#[cfg(test)] mod tests` is
+        # then runnable without solana-runtime.
+        run: cargo clippy --all-targets --features no-entrypoint -- -D warnings
+      - name: cargo test (in-crate unit tests)
+        run: cargo test --lib --features no-entrypoint
 
   anchor-build-and-test:
     name: Anchor build + integration tests
