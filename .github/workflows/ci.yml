@@ -45,10 +45,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
       - name: Install Solana CLI 1.18.20
+        # `release.solana.com` redirects to the Anza-hosted artifacts now; we
+        # hit the canonical Anza URL directly to avoid the redirect-chain
+        # failures we saw in v0.2.0 CI. We also persist PATH for the current
+        # step (so the next `solana --version` works) AND append to
+        # $GITHUB_PATH for subsequent steps.
         run: |
-          sh -c "$(curl -sSfL https://release.solana.com/v1.18.20/install)"
+          sh -c "$(curl -sSfL https://release.anza.xyz/v1.18.20/install)"
           echo "$HOME/.local/share/solana/install/active_release/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.local/share/solana/install/active_release/bin:$PATH"
+          solana --version
       - name: Verify Solana toolchain
         run: solana --version
       - name: Install Anchor CLI 0.30.1 via avm
