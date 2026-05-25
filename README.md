@@ -56,20 +56,25 @@ cargo install --git https://github.com/coral-xyz/anchor avm --locked
 avm install 0.30.1 && avm use 0.30.1
 yarn install
 
-# 2. Generate a fresh program keypair on first clone, sync the program ID
-#    everywhere (lib.rs `declare_id!` + Anchor.toml). The repo ships with a
-#    placeholder ID; this command replaces it with one whose private key
-#    you control locally.
-anchor keys sync
-
-# 3. Build + run integration tests on a local validator
-anchor build
-anchor test
+# 2. Bootstrap the program keypair on first clone. `anchor keys sync`
+#    needs a keypair file to read; on a fresh clone there isn't one yet,
+#    so generate it first. This single block is the canonical
+#    "fresh-clone → green build" path:
+mkdir -p target/deploy
+solana-keygen new \
+  -o target/deploy/vault_thresholds-keypair.json \
+  --no-bip39-passphrase --silent
+anchor keys sync     # rewrites declare_id! + Anchor.toml from the keypair
+anchor build         # BPF compile
+anchor test          # spins local validator, runs tests/vault-thresholds.ts
 ```
 
-CI (GitHub Actions, `.github/workflows/ci.yml`) runs `rust-unit-tests`: `cargo fmt --check`, `cargo clippy --features no-entrypoint -D warnings` (which exercises Anchor's `#[derive(Accounts)]`, `#[program]`, `#[account]` macro expansion), plus the `#[cfg(test)] mod tests { … }` inside `lib.rs` (serialization round-trip, breach-logic invariants, account-space sanity).
+The repo ships with a placeholder program ID (`VtThr1111…`); `anchor keys sync` replaces it with one whose private key lives locally. Deploying without this step would target an address nobody controls.
 
-The BPF program build (`anchor build`) and integration tests (`anchor test` against a local validator, `tests/vault-thresholds.ts`) are verified locally before each release — they're not in CI because Anchor 0.30.1 ships with a Solana 1.18.20 toolchain (cargo ≈1.75) that conflicts with the modern AVM installer's `edition2024` requirement (rustc ≥1.85, which writes lockfile-v4 that the older cargo can't parse). The compile-time signal from `cargo clippy` covers program-logic regressions; the BPF target build is a packaging step.
+CI (GitHub Actions, `.github/workflows/ci.yml`) runs two jobs:
+
+1. **`rust-unit-tests`** — `cargo fmt --check`, `cargo clippy --features no-entrypoint -D warnings` (exercises Anchor's `#[derive(Accounts)]`, `#[program]`, `#[account]` macro expansion), plus the `#[cfg(test)] mod tests { … }` inside `lib.rs` (serialization round-trip, breach-logic invariants, account-space sanity).
+2. **`anchor-build`** — full `anchor build` BPF compile on every push/PR, using the bootstrap flow above. The BPF target is treated as a release gate; integration tests (`anchor test` against a local validator) are still run locally before tagging because spinning the validator under GitHub Actions has historically been flaky around `solana-test-validator` startup.
 
 ---
 
@@ -106,6 +111,39 @@ Account rent + a tiny CU budget is the price for immutability.
 - 🟨 [`ethbtc-suspicious-patterns`](https://github.com/mkzung/ethbtc-suspicious-patterns) — six-detector forensics on ETH/BTC microstructure.
 
 This Anchor program is the **on-chain commitment surface** that the off-chain counterfactual tools above can push into.
+
+---
+
+## Changelog
+
+### v0.2.0 (2026-05-25)
+
+**Breaking changes**
+
+- **Event field rename: `metricpad_name` → `metric_name`** on `BreachEvent` and `BreachReset`. Original was a typo; IDL consumers that deserialize either event by field name must update. The wire format is the same byte layout, so positional decoders are unaffected; named-field decoders (Anchor TS client, indexers using the IDL) need a regenerated IDL.
+- **New `monitor: Pubkey` field on `MonitorInitialized`, `ThresholdAdded`, `BreachEvent`, `BreachReset`**. Indexers that previously had to derive the PDA from `(authority, vault_label)` to correlate events can now read it directly. Appended at the end of each event so positional decoding is preserved, but the IDL changes.
+
+**Security / correctness**
+
+- `update_metric` oracle authorization moved from a handler-level check to declarative `has_one = oracle_signer` on the accounts struct. The misleading `/// CHECK:` comment on the `Signer` is removed (Signers don't need CHECK).
+- `update_metric` now rejects `i64::MIN` / `i64::MAX` sentinel values (`InvalidMetricValue`) — guards against off-chain monitors that fail-default to a sentinel and would otherwise spuriously breach Above-style thresholds.
+- `update_metric` now enforces a monotonic-slot guard (`StaleUpdate`) — out-of-order updates from a misbehaving relayer are rejected. Equal-slot is allowed (multi-tx-per-slot is normal).
+- `update_metric` short-circuits silently when `current_value == new_value && last_update_slot != 0` (CU saving; no behavioral change for first writes or value changes).
+- `add_threshold` rejects all-zero `name` (`InvalidThresholdName`).
+- `initialize_monitor` rejects all-zero `vault_label` (`InvalidVaultLabel`).
+- `AuthorityAction` PDA seeds now use `monitor.authority.as_ref()` (matching `UpdateMetric`) instead of `authority.key().as_ref()`. Functionally equivalent given `has_one`, but consistent and removes a footgun if `has_one` is ever loosened.
+
+**Tooling**
+
+- `Cargo.lock` is now committed (program is a deployable binary; lock should be pinned).
+- CI now runs `anchor build` in addition to the rust-unit-tests job — see new bootstrap docs above.
+- `tsconfig.json` `strict: true`.
+- `Cargo.toml` gets `keywords` + `categories` (crates.io publishability).
+- TS integration tests cover: 17th-threshold cap rejection, empty-name rejection, `i64::MIN`/`MAX` rejection, same-value short-circuit, `set_oracle_signer(Pubkey::default())` rejection.
+
+### v0.1.0 (initial)
+
+Minimal Anchor program — five instructions (`initialize_monitor`, `add_threshold`, `update_metric`, `reset_breach`, `set_oracle_signer`), sticky-edge breach semantics, oracle-signer rotation with zero-pubkey rejection.
 
 ---
 

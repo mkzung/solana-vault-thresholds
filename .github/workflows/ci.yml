@@ -6,22 +6,20 @@ on:
   pull_request:
     branches: [main]
 
-# CI design note (Round 3, post-mortem):
+# CI design note (v0.2.0):
 #
-# We previously had a second job (`anchor-build-and-test`) that ran
-# `anchor build` + `anchor test` against a local validator. We removed
-# it because Anchor 0.30.1 + Solana 1.18.20's bundled toolchain
-# (cargo ≈1.75) conflicts with modern AVM (which now requires Rust 1.85+
-# for the `edition2024` feature). Specifically:
-#   - AVM install requires rustc ≥1.85
-#   - rustc ≥1.84 defaults Cargo.lock to lockfile-version 4
-#   - cargo-build-sbf (Solana 1.18.20) only parses v3
-# Threading this needle (two-toolchain dance, vendored anchor, etc.) added
-# fragile machinery for marginal signal: the in-crate `cargo clippy --features
-# no-entrypoint` already exercises Anchor's `#[derive(Accounts)]`, `#[program]`,
-# and `#[account]` macros, so a compile-time regression in the program logic
-# is caught by the unit-tests job. The BPF target build is verified locally
-# (see README) before each release.
+# Two jobs run on every push/PR:
+#   1. rust-unit-tests — fmt + clippy + in-crate `#[cfg(test)]` tests using
+#      a stable host rustc and the `no-entrypoint` feature. Catches macro
+#      regressions and program-logic regressions without the BPF target.
+#   2. anchor-build    — full Anchor 0.30.1 BPF compile via the bootstrap
+#      flow documented in the README (solana-keygen → anchor keys sync →
+#      anchor build). Gates releases on packaging success.
+#
+# `anchor test` (the validator-spinning integration suite at
+# tests/vault-thresholds.ts) still runs locally before each tag; the local
+# validator under GitHub Actions has historically been flaky around startup
+# timing and we prefer a deterministic release gate over a noisy CI signal.
 
 jobs:
   rust-unit-tests:
@@ -41,3 +39,35 @@ jobs:
         run: cargo clippy --all-targets --features no-entrypoint -- -D warnings
       - name: cargo test (in-crate unit tests)
         run: cargo test --lib --features no-entrypoint
+
+  anchor-build:
+    name: Anchor BPF build (full lifecycle)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Solana CLI 1.18.20
+        run: |
+          sh -c "$(curl -sSfL https://release.solana.com/v1.18.20/install)"
+          echo "$HOME/.local/share/solana/install/active_release/bin" >> "$GITHUB_PATH"
+      - name: Verify Solana toolchain
+        run: solana --version
+      - name: Install Anchor CLI 0.30.1 via avm
+        run: |
+          cargo install --git https://github.com/coral-xyz/anchor avm --locked --force
+          avm install 0.30.1
+          avm use 0.30.1
+          anchor --version
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: yarn install
+        run: yarn install --frozen-lockfile || yarn install
+      - name: Bootstrap program keypair + sync ID
+        run: |
+          mkdir -p target/deploy
+          solana-keygen new \
+            -o target/deploy/vault_thresholds-keypair.json \
+            --no-bip39-passphrase --silent --force
+          anchor keys sync
+      - name: anchor build
+        run: anchor build

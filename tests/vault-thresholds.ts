@@ -189,4 +189,119 @@ describe("vault-thresholds", () => {
       assert.match(err.message, /ThresholdNotFound/i);
     }
   });
+
+  // ───────────────────────────────────────────────────────────────────────
+  // v0.2.0 coverage: empty-name rejection, i64 sentinel rejection,
+  // same-value short-circuit, zero-pubkey rotation rejection, 16-threshold
+  // cap enforcement.
+  // ───────────────────────────────────────────────────────────────────────
+
+  it("add_threshold — rejects all-zero name", async () => {
+    const emptyName = Array.from(Buffer.alloc(32)); // all zeros
+    try {
+      await program.methods
+        .addThreshold(emptyName, new anchor.BN(1), { above: {} })
+        .accounts({ monitor: monitorPda, authority: authority.publicKey })
+        .rpc();
+      assert.fail("expected InvalidThresholdName");
+    } catch (e) {
+      const err = e as AnchorError;
+      assert.match(err.message, /InvalidThresholdName/i);
+    }
+  });
+
+  it("update_metric — rejects i64::MIN and i64::MAX sentinels", async () => {
+    const nameUtil = pad32("utilization_bps");
+    // i64::MAX
+    try {
+      await program.methods
+        .updateMetric(nameUtil, new anchor.BN("9223372036854775807"))
+        .accounts({ monitor: monitorPda, oracleSigner: authority.publicKey })
+        .rpc();
+      assert.fail("expected InvalidMetricValue (i64::MAX)");
+    } catch (e) {
+      const err = e as AnchorError;
+      assert.match(err.message, /InvalidMetricValue/i);
+    }
+    // i64::MIN
+    try {
+      await program.methods
+        .updateMetric(nameUtil, new anchor.BN("-9223372036854775808"))
+        .accounts({ monitor: monitorPda, oracleSigner: authority.publicKey })
+        .rpc();
+      assert.fail("expected InvalidMetricValue (i64::MIN)");
+    } catch (e) {
+      const err = e as AnchorError;
+      assert.match(err.message, /InvalidMetricValue/i);
+    }
+  });
+
+  it("update_metric — same-value short-circuit (no event, no error)", async () => {
+    const nameUtil = pad32("utilization_bps");
+    // Set a known baseline value first.
+    await program.methods
+      .updateMetric(nameUtil, new anchor.BN(7000))
+      .accounts({ monitor: monitorPda, oracleSigner: authority.publicKey })
+      .rpc();
+    let state = await program.account.vaultMonitor.fetch(monitorPda);
+    const slotBefore = state.thresholds[0].lastUpdateSlot.toNumber();
+    assert.equal(state.thresholds[0].currentValue.toNumber(), 7000);
+
+    // Push the same value again → handler should short-circuit. The tx
+    // succeeds (no error), but last_update_slot stays where it was. We
+    // can't directly assert "no emit" via the client cheaply, so we
+    // assert the silent-OK contract by checking state stability.
+    await program.methods
+      .updateMetric(nameUtil, new anchor.BN(7000))
+      .accounts({ monitor: monitorPda, oracleSigner: authority.publicKey })
+      .rpc();
+    state = await program.account.vaultMonitor.fetch(monitorPda);
+    assert.equal(state.thresholds[0].currentValue.toNumber(), 7000);
+    assert.equal(
+      state.thresholds[0].lastUpdateSlot.toNumber(),
+      slotBefore,
+      "same-value short-circuit must NOT advance last_update_slot",
+    );
+  });
+
+  it("set_oracle_signer — rejects zero-pubkey", async () => {
+    try {
+      await program.methods
+        .setOracleSigner(PublicKey.default)
+        .accounts({ monitor: monitorPda, authority: authority.publicKey })
+        .rpc();
+      assert.fail("expected InvalidOracleSigner");
+    } catch (e) {
+      const err = e as AnchorError;
+      assert.match(err.message, /InvalidOracleSigner/i);
+    }
+  });
+
+  it("add_threshold — caps at MAX_THRESHOLDS (17th rejected)", async () => {
+    // Existing state already has 2 thresholds from the earlier `it()`
+    // blocks (utilization_bps, oracle_staleness). Add 14 more to reach
+    // the cap of 16, then the 17th must fail.
+    for (let i = 0; i < 14; i++) {
+      const name = pad32(`filler_${i.toString().padStart(2, "0")}`);
+      await program.methods
+        .addThreshold(name, new anchor.BN(i + 1), { above: {} })
+        .accounts({ monitor: monitorPda, authority: authority.publicKey })
+        .rpc();
+    }
+    const state = await program.account.vaultMonitor.fetch(monitorPda);
+    assert.equal(state.thresholds.length, 16, "should be at cap now");
+
+    // 17th must be rejected.
+    const overflow = pad32("would_be_17th");
+    try {
+      await program.methods
+        .addThreshold(overflow, new anchor.BN(99), { above: {} })
+        .accounts({ monitor: monitorPda, authority: authority.publicKey })
+        .rpc();
+      assert.fail("expected TooManyThresholds");
+    } catch (e) {
+      const err = e as AnchorError;
+      assert.match(err.message, /TooManyThresholds/i);
+    }
+  });
 });

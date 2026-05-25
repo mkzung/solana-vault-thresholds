@@ -47,10 +47,13 @@
 //!
 //! ## Events
 //!
-//! * `BreachEvent { vault, metricpad_name, value, threshold, comparison,
-//!   timestamp }` — emitted exactly once on the slot a metric first
-//!   crosses its threshold. Subsequent updates while still breached
-//!   don't re-emit.
+//! * `BreachEvent { monitor, authority, vault_label, metric_name, value,
+//!   threshold, comparison, slot, timestamp }` — emitted exactly once on the
+//!   slot a metric first crosses its threshold. Subsequent updates while
+//!   still breached don't re-emit.
+//!
+//! Note (v0.2.0): the event field was renamed from `metricpad_name` to
+//! `metric_name`. This is a breaking change for IDL consumers — see CHANGELOG.
 //!
 //! ## Limits (deliberate, for v0.1)
 //!
@@ -78,6 +81,10 @@ pub mod vault_thresholds {
         ctx: Context<InitializeMonitor>,
         vault_label: [u8; 32],
     ) -> Result<()> {
+        require!(
+            vault_label != [0u8; 32],
+            VaultThresholdsError::InvalidVaultLabel
+        );
         let monitor = &mut ctx.accounts.monitor;
         monitor.authority = ctx.accounts.authority.key();
         monitor.oracle_signer = ctx.accounts.authority.key();
@@ -85,6 +92,7 @@ pub mod vault_thresholds {
         monitor.thresholds = Vec::new();
         monitor.bump = ctx.bumps.monitor;
         emit!(MonitorInitialized {
+            monitor: monitor.key(),
             authority: monitor.authority,
             oracle_signer: monitor.oracle_signer,
             vault_label,
@@ -99,6 +107,10 @@ pub mod vault_thresholds {
         threshold_value: i64,
         comparison: Comparison,
     ) -> Result<()> {
+        require!(
+            name != [0u8; 32],
+            VaultThresholdsError::InvalidThresholdName
+        );
         let monitor = &mut ctx.accounts.monitor;
         require!(
             monitor.thresholds.len() < MAX_THRESHOLDS,
@@ -117,6 +129,7 @@ pub mod vault_thresholds {
             last_update_slot: 0,
         });
         emit!(ThresholdAdded {
+            monitor: monitor.key(),
             authority: monitor.authority,
             vault_label: monitor.vault_label,
             name,
@@ -127,15 +140,21 @@ pub mod vault_thresholds {
     }
 
     /// Push a new metric value for a named threshold. Permissioned to the
-    /// configured `oracle_signer`. On a NEW breach (previously-clean threshold
-    /// crosses), emits `BreachEvent`.
+    /// configured `oracle_signer` (enforced declaratively via `has_one` on
+    /// the `UpdateMetric` accounts struct). On a NEW breach (previously-clean
+    /// threshold crosses), emits `BreachEvent`.
     pub fn update_metric(ctx: Context<UpdateMetric>, name: [u8; 32], new_value: i64) -> Result<()> {
+        // Reject stale i64 sentinel values. Off-chain monitors that fail to
+        // compute a metric sometimes default to MIN/MAX; treating those as
+        // real readings would either spuriously breach (MAX on Above-style)
+        // or spuriously clear comparisons.
+        require!(
+            new_value > i64::MIN && new_value < i64::MAX,
+            VaultThresholdsError::InvalidMetricValue
+        );
+
         let clock = Clock::get()?;
         let monitor = &mut ctx.accounts.monitor;
-        require!(
-            ctx.accounts.oracle_signer.key() == monitor.oracle_signer,
-            VaultThresholdsError::UnauthorizedOracle
-        );
 
         // Capture immutable identity fields BEFORE taking the mutable
         // threshold borrow. Without this, `emit!` would try to read
@@ -144,12 +163,29 @@ pub mod vault_thresholds {
         // checker rejects (E0502).
         let authority = monitor.authority;
         let vault_label = monitor.vault_label;
+        let monitor_key = monitor.key();
 
         let t = monitor
             .thresholds
             .iter_mut()
             .find(|t| t.name == name)
             .ok_or(VaultThresholdsError::ThresholdNotFound)?;
+
+        // Monotonic-slot guard: reject out-of-order updates. Equal-slot is
+        // allowed (a single slot can carry multiple txs from the oracle).
+        require!(
+            clock.slot >= t.last_update_slot,
+            VaultThresholdsError::StaleUpdate
+        );
+
+        // No-op short-circuit: identical value at later/same slot is a
+        // wasted write. Skip silently to save CU. We guard on
+        // `last_update_slot != 0` so the very first write through still
+        // executes (avoids treating a freshly-zeroed `current_value` as
+        // "already set to 0").
+        if t.current_value == new_value && t.last_update_slot != 0 {
+            return Ok(());
+        }
 
         t.current_value = new_value;
         t.last_update_slot = clock.slot;
@@ -165,9 +201,10 @@ pub mod vault_thresholds {
         if cross_event {
             t.breached = true;
             emit!(BreachEvent {
+                monitor: monitor_key,
                 authority,
                 vault_label,
-                metricpad_name: name,
+                metric_name: name,
                 value: new_value,
                 threshold: t.threshold_value,
                 comparison: t.comparison,
@@ -187,6 +224,7 @@ pub mod vault_thresholds {
         // iter_mut() to avoid E0502.
         let authority = monitor.authority;
         let vault_label = monitor.vault_label;
+        let monitor_key = monitor.key();
         let t = monitor
             .thresholds
             .iter_mut()
@@ -196,9 +234,10 @@ pub mod vault_thresholds {
         t.breached = false;
         if was_breached {
             emit!(BreachReset {
+                monitor: monitor_key,
                 authority,
                 vault_label,
-                metricpad_name: name,
+                metric_name: name,
             });
         }
         Ok(())
@@ -303,7 +342,13 @@ pub struct AuthorityAction<'info> {
     #[account(
         mut,
         has_one = authority @ VaultThresholdsError::Unauthorized,
-        seeds = [b"monitor", authority.key().as_ref(), &monitor.vault_label],
+        // Defense-in-depth: re-derive the PDA from the stored authority
+        // (NOT from the passed-in `authority` signer) so a wrong-but-signing
+        // pair can't be paired with someone else's monitor PDA. `has_one`
+        // already binds them, but using `monitor.authority.as_ref()` for
+        // the seeds matches the `UpdateMetric` pattern and removes any
+        // ambiguity if `has_one` is ever loosened.
+        seeds = [b"monitor", monitor.authority.as_ref(), &monitor.vault_label],
         bump = monitor.bump
     )]
     pub monitor: Account<'info, VaultMonitor>,
@@ -314,12 +359,11 @@ pub struct AuthorityAction<'info> {
 pub struct UpdateMetric<'info> {
     #[account(
         mut,
+        has_one = oracle_signer @ VaultThresholdsError::UnauthorizedOracle,
         seeds = [b"monitor", monitor.authority.as_ref(), &monitor.vault_label],
         bump = monitor.bump
     )]
     pub monitor: Account<'info, VaultMonitor>,
-    /// CHECK: identity verified via has_one-style check in handler against
-    /// monitor.oracle_signer; signed by the caller.
     pub oracle_signer: Signer<'info>,
 }
 
@@ -329,6 +373,7 @@ pub struct UpdateMetric<'info> {
 
 #[event]
 pub struct MonitorInitialized {
+    pub monitor: Pubkey,
     pub authority: Pubkey,
     pub oracle_signer: Pubkey,
     pub vault_label: [u8; 32],
@@ -336,6 +381,7 @@ pub struct MonitorInitialized {
 
 #[event]
 pub struct ThresholdAdded {
+    pub monitor: Pubkey,
     pub authority: Pubkey,
     pub vault_label: [u8; 32],
     pub name: [u8; 32],
@@ -345,9 +391,12 @@ pub struct ThresholdAdded {
 
 #[event]
 pub struct BreachEvent {
+    pub monitor: Pubkey,
     pub authority: Pubkey,
     pub vault_label: [u8; 32],
-    pub metricpad_name: [u8; 32],
+    /// Renamed from `metricpad_name` in v0.2.0 (typo fix). Breaking change
+    /// for IDL consumers.
+    pub metric_name: [u8; 32],
     pub value: i64,
     pub threshold: i64,
     pub comparison: Comparison,
@@ -357,9 +406,12 @@ pub struct BreachEvent {
 
 #[event]
 pub struct BreachReset {
+    pub monitor: Pubkey,
     pub authority: Pubkey,
     pub vault_label: [u8; 32],
-    pub metricpad_name: [u8; 32],
+    /// Renamed from `metricpad_name` in v0.2.0 (typo fix). Breaking change
+    /// for IDL consumers.
+    pub metric_name: [u8; 32],
 }
 
 #[event]
@@ -389,6 +441,14 @@ pub enum VaultThresholdsError {
     InvalidOracleSigner,
     #[msg("New oracle signer is identical to the current one — no-op rejected.")]
     OracleSignerUnchanged,
+    #[msg("Metric value is an i64 sentinel (MIN/MAX) — likely an upstream computation failure.")]
+    InvalidMetricValue,
+    #[msg("Update slot is older than the threshold's last_update_slot.")]
+    StaleUpdate,
+    #[msg("Threshold name cannot be all zeros.")]
+    InvalidThresholdName,
+    #[msg("Vault label cannot be all zeros.")]
+    InvalidVaultLabel,
 }
 
 // ──────────────────────────────────────────────────────────────────────

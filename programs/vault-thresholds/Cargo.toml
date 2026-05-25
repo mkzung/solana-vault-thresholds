@@ -1,12 +1,14 @@
 [package]
 name = "vault-thresholds"
-version = "0.1.0"
+version = "0.2.0"
 description = "On-chain parametric risk-threshold storage with permissioned oracle updates."
 edition = "2021"
 license = "MIT"
 authors = ["Max Gorbuk <103102868+mkzung@users.noreply.github.com>"]
 repository = "https://github.com/mkzung/solana-vault-thresholds"
 readme = "../../README.md"
+keywords = ["solana", "anchor", "defi", "risk", "oracle"]
+categories = ["cryptography::cryptocurrencies", "finance"]
 
 [lib]
 crate-type = ["cdylib", "lib"]

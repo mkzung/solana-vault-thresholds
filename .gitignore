@@ -9,3 +9,7 @@ test-ledger
 *.so
 .idea/
 .vscode/
+
+# Cargo.lock IS committed (this program is a deployable binary, not a library).
+# Listed here for clarity; not actually ignored.
+!Cargo.lock
