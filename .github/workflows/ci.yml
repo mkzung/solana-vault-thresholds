@@ -45,7 +45,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      # Pin Rust to 1.79.0 — last stable that defaults to Cargo.lock v3.
+      # Newer cargo writes v4 lockfiles which Solana 1.18.20's bundled
+      # cargo-build-sbf cannot parse ("lock file version 4 requires
+      # -Znext-lockfile-bump"). Anchor 0.30.1's compatibility matrix is
+      # documented for Rust 1.79.
+      - uses: dtolnay/rust-toolchain@1.79.0
       - uses: Swatinem/rust-cache@v2
       - name: Install Solana CLI 1.18.20
         # `release.solana.com` redirects to the Anza-hosted artifacts now; we
